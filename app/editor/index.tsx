@@ -42,6 +42,7 @@ import { inputRules } from "@shared/editor/lib/inputRules";
 import type { MarkdownSerializer } from "@shared/editor/lib/markdown/serializer";
 import { isRemoteTransaction } from "@shared/editor/lib/multiplayer";
 import textBetween from "@shared/editor/lib/textBetween";
+import trackAnchorPosition from "@shared/editor/lib/trackAnchorPosition";
 import { findNearestPos } from "@shared/editor/queries/findNearestPos";
 import { basicExtensions as extensions } from "@shared/editor/nodes";
 import type ReactNode from "@shared/editor/nodes/ReactNode";
@@ -266,6 +267,7 @@ export class Editor extends React.PureComponent<
   rulePlugins: PluginSimple[];
   events = new EventEmitter();
   mutationObserver?: MutationObserver;
+  private stopAnchorTracking?: () => void;
   private observableState = observable.box<EditorState | undefined>(undefined, {
     deep: false,
   });
@@ -368,8 +370,13 @@ export class Editor extends React.PureComponent<
       );
     }
 
-    if (this.props.scrollTo && this.props.scrollTo !== prevProps.scrollTo) {
-      void this.scrollToAnchor(this.props.scrollTo);
+    if (this.props.scrollTo !== prevProps.scrollTo) {
+      if (this.props.scrollTo) {
+        void this.scrollToAnchor(this.props.scrollTo);
+      } else {
+        this.stopAnchorTracking?.();
+        this.mutationObserver?.disconnect();
+      }
     }
 
     // Recompute heading prefix decorations when the display preference changes
@@ -404,6 +411,7 @@ export class Editor extends React.PureComponent<
   }
 
   public componentWillUnmount(): void {
+    this.stopAnchorTracking?.();
     this.view?.destroy();
     this.mutationObserver?.disconnect();
     this.handleEditorDestroy();
@@ -666,6 +674,8 @@ export class Editor extends React.PureComponent<
    * with #.
    */
   public async scrollToAnchor(hash: string) {
+    this.stopAnchorTracking?.();
+    this.mutationObserver?.disconnect();
     if (!hash) {
       return;
     }
@@ -681,10 +691,11 @@ export class Editor extends React.PureComponent<
     }
 
     try {
-      this.mutationObserver?.disconnect();
       this.mutationObserver = observe(
         hash,
         (element) => {
+          this.mutationObserver?.disconnect();
+          this.stopAnchorTracking?.();
           try {
             const pos = this.view.posAtDOM(element, 0, 1);
             if (pos >= 0 && pos <= this.view.state.doc.content.size) {
@@ -700,6 +711,10 @@ export class Editor extends React.PureComponent<
 
           if (isVisible(element)) {
             element.scrollIntoView();
+            const root = this.elementRef.current;
+            if (root) {
+              this.stopAnchorTracking = trackAnchorPosition(element, root);
+            }
           }
         },
         this.elementRef.current || undefined
